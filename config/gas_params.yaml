@@ -6,16 +6,10 @@ serial_gas_node:
     poll_interval_ms: 1000
     startup_timeout_seconds: 120
     fail_on_startup_timeout: false
-    request_start_addr: 0
-    request_count: 10
     inter_request_delay_ms: 500
+    response_timeout_ms: 1000
+    alarm_repeat_seconds: 10
+    temperature_offset_raw: 0 # 当前实机温度编码为raw/10，如遵循手册偏移编码设为500
     max_retries_per_slave: 3
     debug_hex: true
-    slave_ids: [1]
-
-http_gas_node:
-  ros__parameters:
-    gas_api_url: "http://192.168.2.180/spl"
-    gas_threshold: 35.0
-    consecutive_seconds: 4
-    source_name: "http_spl"
+    slave_ids: [1, 2, 3, 4, 5, 6]

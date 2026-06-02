@@ -12,19 +12,12 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(monitor_interfaces REQUIRED)
-find_package(CURL REQUIRED)
 
 add_executable(serial_gas_node src/serial_gas_node.cpp)
 ament_target_dependencies(serial_gas_node rclcpp std_msgs monitor_interfaces)
-target_link_libraries(serial_gas_node CURL::libcurl)
-
-add_executable(http_gas_node src/http_gas_node.cpp)
-ament_target_dependencies(http_gas_node rclcpp std_msgs monitor_interfaces)
-target_link_libraries(http_gas_node CURL::libcurl)
 
 install(TARGETS
   serial_gas_node
-  http_gas_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
