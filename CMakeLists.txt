@@ -10,11 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(monitor_interfaces REQUIRED)
 
 add_executable(serial_gas_node src/serial_gas_node.cpp)
-ament_target_dependencies(serial_gas_node rclcpp std_msgs monitor_interfaces)
+ament_target_dependencies(serial_gas_node rclcpp rclcpp_action std_msgs diagnostic_msgs monitor_interfaces)
 
 install(TARGETS
   serial_gas_node
