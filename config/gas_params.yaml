@@ -9,7 +9,11 @@ serial_gas_node:
     inter_request_delay_ms: 500
     response_timeout_ms: 1000
     alarm_repeat_seconds: 10
-    temperature_offset_raw: 0 # 当前实机温度编码为raw/10，如遵循手册偏移编码设为500
+    temperature_offset_raw: 0          # 当前温度编码为raw/10，手册偏移编码为500
     max_retries_per_slave: 3
     debug_hex: true
-    slave_ids: [1, 2, 3, 4, 5, 6]
+    slave_ids: [1, 2, 3, 4, 5, 6]      # CO2、CO、O2、CH4、CO2、O3
+    use_config_alarm_thresholds: false # false使用设备寄存器阈值，true使用配置覆盖阈值
+    alarm_threshold_slave_ids: [1, 2, 3, 4, 5, 6]
+    low_alarm_overrides: [500.0, 35.0, 19.5, 20.0, 1000.0, 0.1]
+    high_alarm_overrides: [1500.0, 75.0, 23.5, 50.0, 2000.0, 0.5]
