@@ -201,7 +201,9 @@ private:
 
         AlarmSummary alarm;
         apply_manual_test_alarm(alarm);
-        publish_status(readings, diagnostic_msgs::msg::DiagnosticStatus::WARN, alarm.detail);
+        publish_status(readings, diagnostic_msgs::msg::DiagnosticStatus::ERROR, alarm.detail);
+        RCLCPP_WARN(get_logger(), "%s[气体] 已触发测试报警：level=ERROR(2) 持续=%d秒%s",
+                    kLogRed, std::max(1, test_alarm_hold_seconds_), kLogReset);
 
         response->success = true;
         response->message = "已触发气体传感器测试报警";
@@ -409,6 +411,23 @@ private:
         return "fault";
     }
 
+    static int alarm_priority(int status_code)
+    {
+        switch (status_code)
+        {
+        case 6:
+            return 4;
+        case 5:
+            return 3;
+        case 4:
+            return 2;
+        case 1:
+            return 0;
+        default:
+            return 1;
+        }
+    }
+
     GasSensorReading default_sensor_reading(int slave_id, const std::string &error = "通信失败") const
     {
         GasSensorReading msg;
@@ -494,16 +513,13 @@ private:
             return;
         reading.low_alarm = it->second.low;
         reading.high_alarm = it->second.high;
-        if (reading.status_code == 1 || reading.status_code == 4 || reading.status_code == 5 || reading.status_code == 6)
-        {
-            if (reading.high_alarm >= 0.0 && reading.concentration >= reading.high_alarm)
-                reading.status_code = 6;
-            else if (reading.low_alarm >= 0.0 && reading.concentration >= reading.low_alarm)
-                reading.status_code = 5;
-            else
-                reading.status_code = 1;
-            reading.status = sensor_status(reading.status_code);
-        }
+        if (reading.high_alarm >= 0.0 && reading.concentration >= reading.high_alarm)
+            reading.status_code = 6;
+        else if (reading.low_alarm >= 0.0 && reading.concentration >= reading.low_alarm)
+            reading.status_code = 5;
+        else
+            reading.status_code = 1;
+        reading.status = sensor_status(reading.status_code);
     }
 
     bool read_and_parse_sensor(int fd, int slave_id, GasSensorReading &msg, bool require_active = true)
@@ -605,14 +621,17 @@ private:
         const bool repeat_due = repeat_it == last_alarm_times_.end() || std::chrono::duration_cast<std::chrono::seconds>(now_tp - repeat_it->second).count() >= alarm_repeat_seconds_;
 
         const std::string level = alarm_level(reading.status_code);
-        summary.active = reading.status_code != 1;
-        summary.type = "gas_" + level;
-        if (summary.active)
-            summary.detail = "气体传感器状态异常：" + reading.status;
-        else
+        if (reading.status_code != 1)
         {
-            summary.type = "gas_normal";
-            summary.detail = "";
+            const bool should_replace = !summary.active || alarm_priority(reading.status_code) >= alarm_priority(last_summary_status_code_);
+            if (should_replace)
+            {
+                summary.active = true;
+                summary.type = "gas_" + level;
+                summary.detail = "气体传感器异常：地址=" + std::to_string(reading.id) + " 气体=" + reading.gas +
+                                 " 状态=" + reading.status + " 浓度=" + number(reading.concentration) + reading.unit;
+                last_summary_status_code_ = reading.status_code;
+            }
         }
 
         if ((status_changed && (reading.status_code != 1 || status_it != last_status_codes_.end())) || (audible_status(reading.status_code) && repeat_due))
@@ -732,6 +751,7 @@ private:
             {
                 std::vector<GasSensorReading> readings;
                 AlarmSummary alarm;
+                last_summary_status_code_ = 1;
                 for (const int sid : slave_ids_)
                 {
                     GasSensorReading reading;
@@ -750,8 +770,7 @@ private:
                 {
                     apply_manual_test_alarm(alarm);
                     message = alarm.detail;
-                    if (level == diagnostic_msgs::msg::DiagnosticStatus::OK)
-                        level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+                    level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
                 }
                 if (!startup_check_done)
                 {
@@ -800,6 +819,7 @@ private:
     mutable std::mutex status_mutex_;
     std::map<int, int> last_status_codes_;
     std::map<int, std::chrono::steady_clock::time_point> last_alarm_times_;
+    int last_summary_status_code_{1};
     std::chrono::steady_clock::time_point last_manual_test_alarm_until_{};
     std::vector<GasSensorReading> last_readings_;
     rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr status_pub_;
