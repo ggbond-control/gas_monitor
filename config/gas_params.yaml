@@ -17,3 +17,4 @@ serial_gas_node:
     alarm_threshold_slave_ids: [1, 2, 3, 4, 5, 6]
     low_alarm_overrides: [500.0, 35.0, 23.5, 20.0, 1000.0, 0.2]   # [500.0, 35.0, 19.5, 20.0, 1000.0, 0.1]
     high_alarm_overrides: [1500.0, 75.0, 25.0, 50.0, 2000.0, 0.5] # [1500.0, 75.0, 23.5, 50.0, 2000.0, 0.5]
+    gas_type_overrides: ["SF6", "CO", "O2", "CH4", "CO2", "O3"]

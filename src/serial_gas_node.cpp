@@ -57,6 +57,7 @@ public:
         const auto threshold_ids_raw = declare_parameter<std::vector<int64_t>>("alarm_threshold_slave_ids", std::vector<int64_t>{});
         const auto low_alarm_raw = declare_parameter<std::vector<double>>("low_alarm_overrides", std::vector<double>{});
         const auto high_alarm_raw = declare_parameter<std::vector<double>>("high_alarm_overrides", std::vector<double>{});
+        const auto gas_type_names_raw = declare_parameter<std::vector<std::string>>("gas_type_overrides", std::vector<std::string>{});
         if (threshold_ids_raw.size() != low_alarm_raw.size() || threshold_ids_raw.size() != high_alarm_raw.size())
         {
             RCLCPP_WARN(get_logger(), "报警阈值覆盖参数长度不一致，将忽略配置阈值。");
@@ -68,14 +69,34 @@ public:
                 threshold_overrides_[static_cast<int>(threshold_ids_raw[i])] = AlarmThreshold{low_alarm_raw[i], high_alarm_raw[i]};
         }
 
+        if (!gas_type_names_raw.empty() && gas_type_names_raw.size() != threshold_ids_raw.size())
+        {
+            RCLCPP_WARN(get_logger(), "气体类型覆盖参数长度与alarm_threshold_slave_ids不一致，将忽略气体类型覆盖。");
+        }
+        else
+        {
+            for (size_t i = 0; i < gas_type_names_raw.size(); ++i)
+            {
+                const int gas_type_code = gas_code_from_name(gas_type_names_raw[i]);
+                if (gas_type_code < 0)
+                {
+                    RCLCPP_WARN(get_logger(), "未知气体类型覆盖配置：slave_id=%ld gas=%s，将忽略该项。",
+                                static_cast<long>(threshold_ids_raw[i]), gas_type_names_raw[i].c_str());
+                    continue;
+                }
+                gas_type_overrides_[static_cast<int>(threshold_ids_raw[i])] = gas_type_code;
+            }
+        }
+
         status_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticStatus>("/monitor/gas/status", 10);
         start_srv_ = create_service<std_srvs::srv::Trigger>("/monitor/gas/start", std::bind(&SerialGasNode::on_start, this, std::placeholders::_1, std::placeholders::_2));
         stop_srv_ = create_service<std_srvs::srv::Trigger>("/monitor/gas/stop", std::bind(&SerialGasNode::on_stop, this, std::placeholders::_1, std::placeholders::_2));
         test_alarm_srv_ = create_service<std_srvs::srv::Trigger>("/monitor/gas/test_alarm", std::bind(&SerialGasNode::on_test_alarm, this, std::placeholders::_1, std::placeholders::_2));
 
         publish_status(default_readings(), diagnostic_msgs::msg::DiagnosticStatus::STALE, "气体传感器未启动");
-        RCLCPP_INFO(get_logger(), "气体传感器服务已就绪：start=/monitor/gas/start stop=/monitor/gas/stop status=/monitor/gas/status 串口=%s 站号=%s 阈值覆盖=%s",
-                    serial_port_.c_str(), join_ints(slave_ids_).c_str(), use_config_alarm_thresholds_ ? "开启" : "关闭");
+        RCLCPP_INFO(get_logger(), "气体传感器服务已就绪：start=/monitor/gas/start stop=/monitor/gas/stop status=/monitor/gas/status 串口=%s 站号=%s 阈值覆盖=%s 气体类型覆盖=%s",
+                    serial_port_.c_str(), join_ints(slave_ids_).c_str(), use_config_alarm_thresholds_ ? "开启" : "关闭",
+                    use_config_alarm_thresholds_ && !gas_type_overrides_.empty() ? "开启" : "关闭");
     }
 
     ~SerialGasNode() override
@@ -387,6 +408,16 @@ private:
         return it == gas_type_map_.end() ? "未知" : it->second;
     }
 
+    int gas_code_from_name(const std::string &name) const
+    {
+        for (const auto &[code, gas_name_value] : gas_type_map_)
+        {
+            if (gas_name_value == name)
+                return code;
+        }
+        return -1;
+    }
+
     std::string sensor_status(int code) const
     {
         const auto it = sensor_status_map_.find(code);
@@ -481,11 +512,11 @@ private:
                                              : msg.unit_code == 6   ? "mg/m3"
                                              : msg.unit_code == 8   ? "ppb"
                                                                     : "ppm";
-        msg.gas_type_code = (msg.registers[8] >> 8) & 0xFF;
-        msg.status_code = msg.registers[5] & 0xFF;
-
         msg.id = slave_id;
         msg.valid = true;
+        msg.gas_type_code = (msg.registers[8] >> 8) & 0xFF;
+        apply_config_gas_type_override(msg);
+        msg.status_code = msg.registers[5] & 0xFF;
         msg.gas = gas_name(msg.gas_type_code);
         msg.concentration = static_cast<double>(msg.registers[1]) / divisor;
         msg.low_alarm = static_cast<double>(msg.registers[2]) / divisor;
@@ -520,6 +551,16 @@ private:
         else
             reading.status_code = 1;
         reading.status = sensor_status(reading.status_code);
+    }
+
+    void apply_config_gas_type_override(GasSensorReading &reading) const
+    {
+        if (!use_config_alarm_thresholds_)
+            return;
+        const auto it = gas_type_overrides_.find(reading.id);
+        if (it == gas_type_overrides_.end())
+            return;
+        reading.gas_type_code = it->second;
     }
 
     bool read_and_parse_sensor(int fd, int slave_id, GasSensorReading &msg, bool require_active = true)
@@ -812,6 +853,7 @@ private:
     bool use_config_alarm_thresholds_{};
     std::vector<int> slave_ids_;
     std::map<int, AlarmThreshold> threshold_overrides_;
+    std::map<int, int> gas_type_overrides_;
 
     std::atomic<bool> monitoring_active_{false};
     std::thread polling_thread_;
