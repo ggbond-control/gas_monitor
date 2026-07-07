@@ -3,14 +3,16 @@
 ## 编译
 
 ```bash
-cd ~/Workspace/algor_ws
+cd ~/Workspace/task_ws
 colcon build --packages-select gas_monitor --symlink-install
 ```
 
 ## 启动
 
 ```bash
-source ~/Workspace/algor_ws/install/setup.zsh
+sudo usermod -aG dialout cat
+
+source ~/Workspace/task_ws/install/setup.zsh
 ros2 launch gas_monitor gas_monitor.launch.py
 
 ros2 service call /monitor/gas/start std_srvs/srv/Trigger "{}"

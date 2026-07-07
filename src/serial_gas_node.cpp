@@ -45,9 +45,7 @@ public:
         response_timeout_ms_ = declare_parameter<int>("response_timeout_ms", 1000);
         alarm_repeat_seconds_ = declare_parameter<int>("alarm_repeat_seconds", 10);
         test_alarm_hold_seconds_ = declare_parameter<int>("test_alarm_hold_seconds", 5);
-        temperature_offset_raw_ = declare_parameter<int>("temperature_offset_raw", 0);
         max_retries_per_slave_ = declare_parameter<int>("max_retries_per_slave", 3);
-        debug_hex_ = declare_parameter<bool>("debug_hex", true);
         use_config_alarm_thresholds_ = declare_parameter<bool>("use_config_alarm_thresholds", false);
 
         const auto slave_ids_raw = declare_parameter<std::vector<int64_t>>("slave_ids", {1});
@@ -525,13 +523,13 @@ private:
         msg.full_scale = static_cast<double>(msg.registers[4]) / divisor;
         msg.status = sensor_status(msg.status_code);
         msg.ad_value = msg.registers[6];
-        msg.temp = (static_cast<double>(msg.registers[7]) - temperature_offset_raw_) / 10.0;
+        msg.temp = static_cast<double>(msg.registers[7]) / 10.0;
         msg.humidity = static_cast<double>(msg.registers[9]) / 10.0;
         msg.error.clear();
 
-        RCLCPP_DEBUG(get_logger(), "[气体] 地址=%d 气体=%s(%d) 浓度=%.3f%s 低报=%.3f 高报=%.3f 状态=%s(0x%02X) AD=%d 温度=%.1f°C 湿度=%.1f%%RH",
-                     slave_id, msg.gas.c_str(), msg.gas_type_code, msg.concentration, msg.unit.c_str(),
-                     msg.low_alarm, msg.high_alarm, msg.status.c_str(), msg.status_code, msg.ad_value, msg.temp, msg.humidity);
+        RCLCPP_INFO(get_logger(), "[气体] 地址=%d 气体=%s(%d) 浓度=%.3f%s 低报=%.3f 高报=%.3f 状态=%s(0x%02X) AD=%d 温度=%.1f°C 湿度=%.1f%%RH",
+                    slave_id, msg.gas.c_str(), msg.gas_type_code, msg.concentration, msg.unit.c_str(),
+                    msg.low_alarm, msg.high_alarm, msg.status.c_str(), msg.status_code, msg.ad_value, msg.temp, msg.humidity);
         return true;
     }
 
@@ -584,9 +582,6 @@ private:
                 msg.error = strerror(errno);
                 continue;
             }
-            if (debug_hex_)
-                RCLCPP_DEBUG(get_logger(), "[串口] 地址=%d 第%d次 数据=%s", slave_id, attempt, to_hex(request).c_str());
-
             const auto frame = read_response_frame(fd, require_active);
             msg = default_sensor_reading(slave_id);
             msg.raw_frame_hex = to_hex(frame);
@@ -847,9 +842,7 @@ private:
     int response_timeout_ms_{};
     int alarm_repeat_seconds_{};
     int test_alarm_hold_seconds_{};
-    int temperature_offset_raw_{};
     int max_retries_per_slave_{};
-    bool debug_hex_{};
     bool use_config_alarm_thresholds_{};
     std::vector<int> slave_ids_;
     std::map<int, AlarmThreshold> threshold_overrides_;
