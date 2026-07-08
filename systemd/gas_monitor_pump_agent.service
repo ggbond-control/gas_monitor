@@ -1,0 +1,16 @@
+[Unit]
+Description=Gas Monitor Pump Relay Root Agent
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/cat
+Environment=HOME=/root
+Environment=ROS_HOME=/root/.ros
+Environment=ROS_LOG_DIR=/root/.ros/log
+ExecStart=/home/cat/Workspace/task_ws/src/gas_monitor/scripts/run_gas_monitor_pump_agent.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

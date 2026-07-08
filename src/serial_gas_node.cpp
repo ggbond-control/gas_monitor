@@ -1,4 +1,6 @@
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -19,6 +21,7 @@
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "diagnostic_msgs/msg/key_value.hpp"
+#include "gas_monitor/pump_protocol.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
@@ -31,6 +34,13 @@ public:
     {
         double low{};
         double high{};
+    };
+
+    struct PumpRelayState
+    {
+        bool configured{false};
+        bool enabled{false};
+        std::string message;
     };
 
     SerialGasNode() : Node("serial_gas_node")
@@ -47,6 +57,10 @@ public:
         test_alarm_hold_seconds_ = declare_parameter<int>("test_alarm_hold_seconds", 5);
         max_retries_per_slave_ = declare_parameter<int>("max_retries_per_slave", 3);
         use_config_alarm_thresholds_ = declare_parameter<bool>("use_config_alarm_thresholds", false);
+        pump_relay_enable_ = declare_parameter<bool>("pump_relay_enable", false);
+        pump_relay_gpio_ = declare_parameter<int>("pump_relay_gpio", -1);
+        pump_relay_active_high_ = declare_parameter<bool>("pump_relay_active_high", true);
+        pump_relay_socket_path_ = declare_parameter<std::string>("pump_relay_socket_path", gas_monitor::kDefaultPumpSocketPath);
 
         const auto slave_ids_raw = declare_parameter<std::vector<int64_t>>("slave_ids", {1});
         for (const auto sid : slave_ids_raw)
@@ -92,9 +106,12 @@ public:
         test_alarm_srv_ = create_service<std_srvs::srv::Trigger>("/monitor/gas/test_alarm", std::bind(&SerialGasNode::on_test_alarm, this, std::placeholders::_1, std::placeholders::_2));
 
         publish_status(default_readings(), diagnostic_msgs::msg::DiagnosticStatus::STALE, "气体传感器未启动");
-        RCLCPP_INFO(get_logger(), "气体传感器服务已就绪：start=/monitor/gas/start stop=/monitor/gas/stop status=/monitor/gas/status 串口=%s 站号=%s 阈值覆盖=%s 气体类型覆盖=%s",
-                    serial_port_.c_str(), join_ints(slave_ids_).c_str(), use_config_alarm_thresholds_ ? "开启" : "关闭",
-                    use_config_alarm_thresholds_ && !gas_type_overrides_.empty() ? "开启" : "关闭");
+        RCLCPP_INFO(get_logger(), "气体传感器服务已就绪：start=/monitor/gas/start stop=/monitor/gas/stop status=/monitor/gas/status 串口=%s 站号=%s 阈值覆盖=%s 气体类型覆盖=%s 泵继电器=%s",
+                    serial_port_.c_str(),
+                    join_ints(slave_ids_).c_str(),
+                    use_config_alarm_thresholds_ ? "开启" : "关闭",
+                    use_config_alarm_thresholds_ && !gas_type_overrides_.empty() ? "开启" : "关闭",
+                    pump_relay_enable_ ? "开启" : "关闭");
     }
 
     ~SerialGasNode() override
@@ -102,6 +119,7 @@ public:
         monitoring_active_ = false;
         if (polling_thread_.joinable())
             polling_thread_.join();
+        disconnect_pump_socket();
     }
 
 private:
@@ -157,10 +175,36 @@ private:
         if (polling_thread_.joinable())
             polling_thread_.join();
 
+        if (pump_relay_enable_)
+        {
+            const auto pump_config = configure_pump_relay();
+            if (!pump_config.success)
+            {
+                response->success = false;
+                response->message = "泵继电器配置失败: " + pump_config.message;
+                publish_status(default_readings(response->message), diagnostic_msgs::msg::DiagnosticStatus::ERROR, response->message);
+                return;
+            }
+            const auto pump_on = set_pump_enabled(true);
+            if (!pump_on.success)
+            {
+                response->success = false;
+                response->message = "泵继电器开启失败: " + pump_on.message;
+                publish_status(default_readings(response->message), diagnostic_msgs::msg::DiagnosticStatus::ERROR, response->message);
+                return;
+            }
+        }
+
         std::string probe_message;
         std::vector<GasSensorReading> probe_readings;
         if (!probe_sensors(probe_readings, probe_message))
         {
+            if (pump_relay_enable_)
+            {
+                const auto pump_off = set_pump_enabled(false);
+                if (!pump_off.success)
+                    RCLCPP_WARN(get_logger(), "探测失败后关闭泵继电器失败：%s", pump_off.message.c_str());
+            }
             response->success = false;
             response->message = probe_message;
             publish_status(probe_readings.empty() ? default_readings(probe_message) : probe_readings,
@@ -185,8 +229,16 @@ private:
             std::lock_guard<std::mutex> lock(thread_mutex_);
             if (!monitoring_active_)
             {
-                response->success = true;
-                response->message = "气体传感器已停止";
+                bool pump_ok = true;
+                std::string pump_message;
+                if (pump_relay_enable_)
+                {
+                    const auto pump_off = set_pump_enabled(false);
+                    pump_ok = pump_off.success;
+                    pump_message = pump_off.message;
+                }
+                response->success = pump_ok;
+                response->message = pump_ok ? "气体传感器已停止" : "气体传感器已停止，但关闭泵继电器失败: " + pump_message;
                 publish_status(default_readings(), diagnostic_msgs::msg::DiagnosticStatus::STALE, "气体传感器已停止");
                 return;
             }
@@ -196,8 +248,17 @@ private:
         if (polling_thread_.joinable())
             polling_thread_.join();
 
-        response->success = true;
-        response->message = "气体传感器已停止";
+        bool pump_ok = true;
+        std::string pump_message;
+        if (pump_relay_enable_)
+        {
+            const auto pump_off = set_pump_enabled(false);
+            pump_ok = pump_off.success;
+            pump_message = pump_off.message;
+        }
+
+        response->success = pump_ok;
+        response->message = pump_ok ? "气体传感器已停止" : "气体传感器已停止，但关闭泵继电器失败: " + pump_message;
         publish_status(default_readings(), diagnostic_msgs::msg::DiagnosticStatus::STALE, "气体传感器已停止");
     }
 
@@ -635,6 +696,124 @@ private:
         return true;
     }
 
+    gas_monitor::PumpStatusResponse configure_pump_relay()
+    {
+        gas_monitor::PumpConfig config;
+        config.relay_gpio = pump_relay_gpio_;
+        config.active_high = pump_relay_active_high_;
+        return send_pump_request(gas_monitor::PumpMessageType::kConfigureRequest,
+                                 gas_monitor::serialize_pump_config(config),
+                                 gas_monitor::PumpMessageType::kConfigureResponse);
+    }
+
+    gas_monitor::PumpStatusResponse set_pump_enabled(bool enable)
+    {
+        gas_monitor::PumpStateCommand command;
+        command.enable = enable;
+        auto response = send_pump_request(gas_monitor::PumpMessageType::kSetStateRequest,
+                                          gas_monitor::serialize_pump_state_command(command),
+                                          gas_monitor::PumpMessageType::kSetStateResponse);
+        if (response.success)
+        {
+            pump_relay_state_.configured = response.configured;
+            pump_relay_state_.enabled = response.enable;
+            pump_relay_state_.message = response.message;
+            RCLCPP_INFO(get_logger(), "泵继电器%s：gpio=%d active_high=%s socket=%s",
+                        enable ? "已开启" : "已关闭",
+                        pump_relay_gpio_,
+                        pump_relay_active_high_ ? "true" : "false",
+                        pump_relay_socket_path_.c_str());
+        }
+        return response;
+    }
+
+    gas_monitor::PumpStatusResponse send_pump_request(gas_monitor::PumpMessageType request_type,
+                                                      const std::vector<std::uint8_t> &payload,
+                                                      gas_monitor::PumpMessageType expected_response)
+    {
+        gas_monitor::PumpStatusResponse failure;
+        failure.success = false;
+        failure.agent_ready = false;
+        failure.relay_gpio = pump_relay_gpio_;
+        failure.active_high = pump_relay_active_high_;
+
+        std::lock_guard<std::mutex> lock(pump_socket_mutex_);
+        const int fd = ensure_pump_connected_locked();
+        if (fd < 0)
+        {
+            failure.message = "未连接到 gas_monitor pump agent，请先启动 systemd 守护进程";
+            return failure;
+        }
+
+        std::string error;
+        if (!gas_monitor::write_pump_message(fd, request_type, payload, &error))
+        {
+            disconnect_pump_socket_locked();
+            failure.message = "发送 IPC 请求失败: " + error;
+            return failure;
+        }
+
+        gas_monitor::PumpMessageType response_type{};
+        std::vector<std::uint8_t> response_payload;
+        if (!gas_monitor::read_pump_message(fd, &response_type, &response_payload, &error))
+        {
+            disconnect_pump_socket_locked();
+            failure.message = "读取 IPC 响应失败: " + error;
+            return failure;
+        }
+        if (response_type != expected_response)
+        {
+            failure.message = "收到意外响应类型";
+            return failure;
+        }
+
+        gas_monitor::PumpStatusResponse response;
+        if (!gas_monitor::deserialize_pump_status_response(response_payload, &response, &error))
+        {
+            failure.message = "解析 IPC 响应失败: " + error;
+            return failure;
+        }
+        return response;
+    }
+
+    int ensure_pump_connected_locked()
+    {
+        if (pump_socket_fd_ >= 0)
+            return pump_socket_fd_;
+
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0)
+            return -1;
+
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", pump_relay_socket_path_.c_str());
+        if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
+        {
+            ::close(fd);
+            return -1;
+        }
+
+        pump_socket_fd_ = fd;
+        RCLCPP_INFO(get_logger(), "已连接到 gas_monitor pump agent: %s", pump_relay_socket_path_.c_str());
+        return pump_socket_fd_;
+    }
+
+    void disconnect_pump_socket()
+    {
+        std::lock_guard<std::mutex> lock(pump_socket_mutex_);
+        disconnect_pump_socket_locked();
+    }
+
+    void disconnect_pump_socket_locked()
+    {
+        if (pump_socket_fd_ >= 0)
+        {
+            ::close(pump_socket_fd_);
+            pump_socket_fd_ = -1;
+        }
+    }
+
     bool manual_test_alarm_active() const
     {
         std::lock_guard<std::mutex> lock(status_mutex_);
@@ -844,6 +1023,10 @@ private:
     int test_alarm_hold_seconds_{};
     int max_retries_per_slave_{};
     bool use_config_alarm_thresholds_{};
+    bool pump_relay_enable_{};
+    int pump_relay_gpio_{-1};
+    bool pump_relay_active_high_{true};
+    std::string pump_relay_socket_path_{gas_monitor::kDefaultPumpSocketPath};
     std::vector<int> slave_ids_;
     std::map<int, AlarmThreshold> threshold_overrides_;
     std::map<int, int> gas_type_overrides_;
@@ -852,11 +1035,14 @@ private:
     std::thread polling_thread_;
     std::mutex thread_mutex_;
     mutable std::mutex status_mutex_;
+    std::mutex pump_socket_mutex_;
     std::map<int, int> last_status_codes_;
     std::map<int, std::chrono::steady_clock::time_point> last_alarm_times_;
     int last_summary_status_code_{1};
     std::chrono::steady_clock::time_point last_manual_test_alarm_until_{};
     std::vector<GasSensorReading> last_readings_;
+    int pump_socket_fd_{-1};
+    PumpRelayState pump_relay_state_;
     rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr status_pub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;

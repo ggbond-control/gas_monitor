@@ -12,6 +12,11 @@ colcon build --packages-select gas_monitor --symlink-install
 ```bash
 sudo usermod -aG dialout cat
 
+sudo cp ~/Workspace/task_ws/src/gas_monitor/systemd/gas_monitor_pump_agent.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now gas_monitor_pump_agent.service
+sudo systemctl restart gas_monitor_pump_agent.service
+
 source ~/Workspace/task_ws/install/setup.zsh
 ros2 launch gas_monitor gas_monitor.launch.py
 
@@ -68,9 +73,27 @@ ls -l /dev/ttyUSB0
 crw-rw---- 1 root dialout 188, 0  6月  2 10:59 /dev/ttyUSB0
 
 groups
-cat root dialout sudo audio video realtime gpio
+cat dialout sudo audio video render
 
 sudo bash -c 'stty -F /dev/ttyUSB0 9600 cs8 -cstopb -parenb raw -echo -ixon -ixoff; printf "\x01\x03\x00\x00\x00\x0A\xC5\xCD" > /dev/ttyUSB0; timeout 1 cat /dev/ttyUSB0 | xxd -g 1'
 00000000: 01 03 14 00 00 00 3b 01 f4 05 dc 0b b8 00 01 00  ......;.........
 00000010: 3b 01 02 06 00 03 5a 38 ad                       ;.....Z8.
+```
+
+```bash
+sudo ~/Workspace/task_ws/src/gas_monitor/scripts/run_gas_monitor_pump_agent.sh
+[gas_monitor_pump_agent]: 气体泵继电器root权限进程代理已启动，socket=/run/gas_monitor/pump_relay.sock
+
+sudo systemctl status gas_monitor_pump_agent.service
+● gas_monitor_pump_agent.service - Gas Monitor Pump Relay Root Agent
+     Loaded: loaded (/etc/systemd/system/gas_monitor_pump_agent.service; enabled; preset: enabled)
+     Active: active (running) since Wed 2026-07-08 11:01:05 CST; 20s ago
+   Main PID: 18175 (gas_monitor_pum)
+      Tasks: 15 (limit: 19108)
+     Memory: 8.7M ()
+     CGroup: /system.slice/gas_monitor_pump_agent.service
+             └─18175 /home/cat/Workspace/task_ws/install/gas_monitor/lib/gas_monitor/gas_monitor_pump_agent /home/cat/Workspace/task_ws/install/gas_monitor/share/gas_monitor/config/gas_params_default.yaml
+
+ls -l /run/gas_monitor/pump_relay.sock
+srw-rw-rw- 1 root root 0  7月  8 10:45 /run/gas_monitor/pump_relay.sock
 ```

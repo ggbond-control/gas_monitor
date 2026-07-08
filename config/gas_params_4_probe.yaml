@@ -10,6 +10,10 @@ serial_gas_node:
     response_timeout_ms: 1000
     alarm_repeat_seconds: 10
     max_retries_per_slave: 3
+    pump_relay_enable: false                        # 泵继电器
+    pump_relay_gpio: -1
+    pump_relay_active_high: true
+    pump_relay_socket_path: "/run/gas_monitor/pump_relay.sock"
     slave_ids: [1, 2, 3, 4]
     use_config_alarm_thresholds: true               # false使用设备寄存器阈值，true使用配置覆盖阈值
     alarm_threshold_slave_ids: [1, 2, 3, 4]
