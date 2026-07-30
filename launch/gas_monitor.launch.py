@@ -10,7 +10,7 @@ def generate_launch_description():
     default_params = os.path.join(get_package_share_directory('gas_monitor'), 'config', 'gas_params_default.yaml')
     return LaunchDescription([
         DeclareLaunchArgument(
-            'params_file',
+            'gas_params_file',
             default_value=default_params,
             description='Path to the gas_monitor parameter YAML file.',
         ),
@@ -22,6 +22,6 @@ def generate_launch_description():
             name='serial_gas_node',
             output='screen',
             output_format='{line}',
-            parameters=[LaunchConfiguration('params_file')],
+            parameters=[LaunchConfiguration('gas_params_file')],
         ),
     ])
