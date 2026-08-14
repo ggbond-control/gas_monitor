@@ -12,6 +12,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 add_library(gas_monitor_common STATIC
   src/pump_protocol.cpp
@@ -23,13 +24,14 @@ target_include_directories(gas_monitor_common PUBLIC
 
 add_library(gas_monitor_pump_agent_lib STATIC
   src/pump_agent.cpp
+  src/pump_config_loader.cpp
 )
 target_include_directories(gas_monitor_pump_agent_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(gas_monitor_pump_agent_lib PUBLIC gas_monitor_common)
-ament_target_dependencies(gas_monitor_pump_agent_lib PUBLIC rclcpp)
+target_link_libraries(gas_monitor_pump_agent_lib PUBLIC gas_monitor_common yaml-cpp)
+ament_target_dependencies(gas_monitor_pump_agent_lib PUBLIC rclcpp yaml-cpp)
 
 add_executable(serial_gas_node src/serial_gas_node.cpp)
 target_include_directories(serial_gas_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
