@@ -74,6 +74,7 @@ public:
         const auto low_alarm_raw = declare_parameter<std::vector<double>>("low_alarm_overrides", std::vector<double>{});
         const auto high_alarm_raw = declare_parameter<std::vector<double>>("high_alarm_overrides", std::vector<double>{});
         const auto gas_type_names_raw = declare_parameter<std::vector<std::string>>("gas_type_overrides", std::vector<std::string>{});
+        configured_probe_count_ = slave_ids_.size();
         alarm_threshold_slave_ids_.reserve(threshold_ids_raw.size());
         for (const auto sid : threshold_ids_raw)
             alarm_threshold_slave_ids_.push_back(static_cast<int>(sid));
@@ -440,6 +441,11 @@ private:
         if (threshold_ids.size() != low_alarms.size() || threshold_ids.size() != high_alarms.size())
         {
             fail("alarm_threshold_slave_ids、low_alarm_overrides、high_alarm_overrides 的长度必须一致");
+            return;
+        }
+        if (threshold_ids.size() != configured_probe_count_)
+        {
+            fail("alarm_threshold_slave_ids 的长度必须与启动时 slave_ids 的长度一致（当前要求 " + std::to_string(configured_probe_count_) + " 个站号）");
             return;
         }
         if (!gas_names.empty() && gas_names.size() != threshold_ids.size())
@@ -1244,6 +1250,7 @@ private:
     std::vector<double> low_alarm_overrides_;
     std::vector<double> high_alarm_overrides_;
     std::vector<std::string> gas_type_overrides_names_;
+    std::size_t configured_probe_count_{0};
     mutable std::mutex config_mutex_;
     std::mutex parameter_update_mutex_;
 
