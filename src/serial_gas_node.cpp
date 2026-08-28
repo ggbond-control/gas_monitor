@@ -17,11 +17,15 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "diagnostic_msgs/msg/key_value.hpp"
 #include "gas_monitor/pump_protocol.hpp"
+#include "rcl_interfaces/msg/parameter_type.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
+#include "rcl_interfaces/srv/set_parameters.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
@@ -70,6 +74,12 @@ public:
         const auto low_alarm_raw = declare_parameter<std::vector<double>>("low_alarm_overrides", std::vector<double>{});
         const auto high_alarm_raw = declare_parameter<std::vector<double>>("high_alarm_overrides", std::vector<double>{});
         const auto gas_type_names_raw = declare_parameter<std::vector<std::string>>("gas_type_overrides", std::vector<std::string>{});
+        alarm_threshold_slave_ids_.reserve(threshold_ids_raw.size());
+        for (const auto sid : threshold_ids_raw)
+            alarm_threshold_slave_ids_.push_back(static_cast<int>(sid));
+        low_alarm_overrides_ = low_alarm_raw;
+        high_alarm_overrides_ = high_alarm_raw;
+        gas_type_overrides_names_ = gas_type_names_raw;
         if (threshold_ids_raw.size() != low_alarm_raw.size() || threshold_ids_raw.size() != high_alarm_raw.size())
         {
             RCLCPP_WARN(get_logger(), "报警阈值覆盖参数长度不一致，将忽略配置阈值。");
@@ -104,9 +114,10 @@ public:
         start_srv_ = create_service<std_srvs::srv::Trigger>("/monitor/gas/start", std::bind(&SerialGasNode::on_start, this, std::placeholders::_1, std::placeholders::_2));
         stop_srv_ = create_service<std_srvs::srv::Trigger>("/monitor/gas/stop", std::bind(&SerialGasNode::on_stop, this, std::placeholders::_1, std::placeholders::_2));
         test_alarm_srv_ = create_service<std_srvs::srv::Trigger>("/monitor/gas/test_alarm", std::bind(&SerialGasNode::on_test_alarm, this, std::placeholders::_1, std::placeholders::_2));
+        set_parameters_srv_ = create_service<rcl_interfaces::srv::SetParameters>("/monitor/gas/set_parameters", std::bind(&SerialGasNode::on_set_parameters, this, std::placeholders::_1, std::placeholders::_2));
 
         publish_status(default_readings(), diagnostic_msgs::msg::DiagnosticStatus::STALE, "气体传感器未启动");
-        RCLCPP_INFO(get_logger(), "气体传感器服务已就绪：start=/monitor/gas/start stop=/monitor/gas/stop status=/monitor/gas/status 串口=%s 站号=%s 阈值覆盖=%s 气体类型覆盖=%s 泵继电器=%s",
+        RCLCPP_INFO(get_logger(), "气体传感器服务已就绪：start=/monitor/gas/start stop=/monitor/gas/stop set_parameters=/monitor/gas/set_parameters status=/monitor/gas/status 串口=%s 站号=%s 阈值覆盖=%s 气体类型覆盖=%s 泵继电器=%s",
                     serial_port_.c_str(),
                     join_ints(slave_ids_).c_str(),
                     use_config_alarm_thresholds_ ? "开启" : "关闭",
@@ -287,6 +298,204 @@ private:
 
         response->success = true;
         response->message = "已触发气体传感器测试报警";
+    }
+
+    void on_set_parameters(const std::shared_ptr<rcl_interfaces::srv::SetParameters::Request> request,
+                           std::shared_ptr<rcl_interfaces::srv::SetParameters::Response> response)
+    {
+        std::lock_guard<std::mutex> update_lock(parameter_update_mutex_);
+        auto fail = [&](const std::string &reason)
+        {
+            rcl_interfaces::msg::SetParametersResult result;
+            result.successful = false;
+            result.reason = reason;
+            response->results.assign(request->parameters.size(), result);
+        };
+
+        std::lock_guard<std::mutex> monitoring_lock(thread_mutex_);
+        if (!monitoring_active_)
+        {
+            fail("气体传感器未启动，无法修改参数，请先调用 /monitor/gas/start");
+            return;
+        }
+
+        if (request->parameters.empty())
+        {
+            fail("至少需要提供一个参数");
+            return;
+        }
+
+        bool use_config_alarm_thresholds = false;
+        std::vector<int> threshold_ids;
+        std::vector<double> low_alarms;
+        std::vector<double> high_alarms;
+        std::vector<std::string> gas_names;
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            use_config_alarm_thresholds = use_config_alarm_thresholds_;
+            threshold_ids = alarm_threshold_slave_ids_;
+            low_alarms = low_alarm_overrides_;
+            high_alarms = high_alarm_overrides_;
+            gas_names = gas_type_overrides_names_;
+        }
+
+        bool has_use_config = false;
+        bool has_ids = false;
+        bool has_low = false;
+        bool has_high = false;
+        bool has_gas_names = false;
+        for (const auto &parameter : request->parameters)
+        {
+            if (parameter.name == "use_config_alarm_thresholds")
+            {
+                if (has_use_config)
+                {
+                    fail("参数 use_config_alarm_thresholds 重复提供");
+                    return;
+                }
+                if (parameter.value.type != rcl_interfaces::msg::ParameterType::PARAMETER_BOOL)
+                {
+                    fail("参数 use_config_alarm_thresholds 必须为布尔值");
+                    return;
+                }
+                has_use_config = true;
+                use_config_alarm_thresholds = parameter.value.bool_value;
+            }
+            else if (parameter.name == "alarm_threshold_slave_ids")
+            {
+                if (has_ids)
+                {
+                    fail("参数 alarm_threshold_slave_ids 重复提供");
+                    return;
+                }
+                if (parameter.value.type != rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER_ARRAY)
+                {
+                    fail("参数 alarm_threshold_slave_ids 必须为整数数组");
+                    return;
+                }
+                has_ids = true;
+                threshold_ids.clear();
+                for (const auto value : parameter.value.integer_array_value)
+                {
+                    if (value < 1 || value > 247)
+                    {
+                        fail("参数 alarm_threshold_slave_ids 中的站号必须在 1 到 247 之间");
+                        return;
+                    }
+                    threshold_ids.push_back(static_cast<int>(value));
+                }
+            }
+            else if (parameter.name == "low_alarm_overrides")
+            {
+                if (has_low)
+                {
+                    fail("参数 low_alarm_overrides 重复提供");
+                    return;
+                }
+                if (parameter.value.type != rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY)
+                {
+                    fail("参数 low_alarm_overrides 必须为浮点数组");
+                    return;
+                }
+                has_low = true;
+                low_alarms.assign(parameter.value.double_array_value.begin(), parameter.value.double_array_value.end());
+            }
+            else if (parameter.name == "high_alarm_overrides")
+            {
+                if (has_high)
+                {
+                    fail("参数 high_alarm_overrides 重复提供");
+                    return;
+                }
+                if (parameter.value.type != rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY)
+                {
+                    fail("参数 high_alarm_overrides 必须为浮点数组");
+                    return;
+                }
+                has_high = true;
+                high_alarms.assign(parameter.value.double_array_value.begin(), parameter.value.double_array_value.end());
+            }
+            else if (parameter.name == "gas_type_overrides")
+            {
+                if (has_gas_names)
+                {
+                    fail("参数 gas_type_overrides 重复提供");
+                    return;
+                }
+                if (parameter.value.type != rcl_interfaces::msg::ParameterType::PARAMETER_STRING_ARRAY)
+                {
+                    fail("参数 gas_type_overrides 必须为字符串数组");
+                    return;
+                }
+                has_gas_names = true;
+                gas_names.assign(parameter.value.string_array_value.begin(), parameter.value.string_array_value.end());
+            }
+            else
+            {
+                fail("不支持的参数：" + parameter.name);
+                return;
+            }
+        }
+
+        if (threshold_ids.size() != low_alarms.size() || threshold_ids.size() != high_alarms.size())
+        {
+            fail("alarm_threshold_slave_ids、low_alarm_overrides、high_alarm_overrides 的长度必须一致");
+            return;
+        }
+        if (!gas_names.empty() && gas_names.size() != threshold_ids.size())
+        {
+            fail("gas_type_overrides 非空时，长度必须与 alarm_threshold_slave_ids 一致");
+            return;
+        }
+
+        std::map<int, AlarmThreshold> threshold_overrides;
+        std::map<int, int> gas_type_overrides;
+        for (size_t i = 0; i < threshold_ids.size(); ++i)
+        {
+            if (threshold_overrides.find(threshold_ids[i]) != threshold_overrides.end())
+            {
+                fail("alarm_threshold_slave_ids 中存在重复站号：" + std::to_string(threshold_ids[i]));
+                return;
+            }
+            if (!std::isfinite(low_alarms[i]) || !std::isfinite(high_alarms[i]) || low_alarms[i] < -1.0 || high_alarms[i] < -1.0)
+            {
+                fail("low_alarm_overrides 和 high_alarm_overrides 必须为有限数值，且不能小于 -1（-1 表示禁用该级报警）");
+                return;
+            }
+            if (low_alarms[i] >= 0.0 && high_alarms[i] >= 0.0 && high_alarms[i] < low_alarms[i])
+            {
+                fail("每个传感器的 high_alarm_overrides 必须大于或等于 low_alarm_overrides");
+                return;
+            }
+            threshold_overrides[threshold_ids[i]] = AlarmThreshold{low_alarms[i], high_alarms[i]};
+
+            if (!gas_names.empty())
+            {
+                const int gas_type_code = gas_code_from_name(gas_names[i]);
+                if (gas_type_code < 0)
+                {
+                    fail("未知气体类型：" + gas_names[i]);
+                    return;
+                }
+                gas_type_overrides[threshold_ids[i]] = gas_type_code;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            use_config_alarm_thresholds_ = use_config_alarm_thresholds;
+            alarm_threshold_slave_ids_ = std::move(threshold_ids);
+            low_alarm_overrides_ = std::move(low_alarms);
+            high_alarm_overrides_ = std::move(high_alarms);
+            gas_type_overrides_names_ = std::move(gas_names);
+            threshold_overrides_ = std::move(threshold_overrides);
+            gas_type_overrides_ = std::move(gas_type_overrides);
+        }
+
+        rcl_interfaces::msg::SetParametersResult success;
+        success.successful = true;
+        success.reason = "气体传感器参数设置成功";
+        response->results.assign(request->parameters.size(), success);
     }
 
     static uint16_t calculate_crc16(const uint8_t *data, size_t length)
@@ -549,6 +758,7 @@ private:
 
     bool parse_register_payload(int slave_id, const std::vector<uint8_t> &frame, GasSensorReading &msg)
     {
+        std::lock_guard<std::mutex> config_lock(config_mutex_);
         const std::string error = frame_error(slave_id, frame);
         msg.raw_frame_hex = to_hex(frame);
         if (!error.empty())
@@ -1030,6 +1240,12 @@ private:
     std::vector<int> slave_ids_;
     std::map<int, AlarmThreshold> threshold_overrides_;
     std::map<int, int> gas_type_overrides_;
+    std::vector<int> alarm_threshold_slave_ids_;
+    std::vector<double> low_alarm_overrides_;
+    std::vector<double> high_alarm_overrides_;
+    std::vector<std::string> gas_type_overrides_names_;
+    mutable std::mutex config_mutex_;
+    std::mutex parameter_update_mutex_;
 
     std::atomic<bool> monitoring_active_{false};
     std::thread polling_thread_;
@@ -1047,6 +1263,7 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr test_alarm_srv_;
+    rclcpp::Service<rcl_interfaces::srv::SetParameters>::SharedPtr set_parameters_srv_;
 
     const std::map<int, std::string> gas_type_map_ = {{0, "NULL"}, {1, "AR"}, {2, "ASH3"}, {3, "B2H6"}, {4, "BR2"}, {5, "CO"}, {6, "CO2"}, {7, "COCL2"}, {8, "CH2O"}, {9, "CH2O2"}, {10, "CH3BR"}, {11, "CH4"}, {12, "CH4O"}, {13, "CH4S"}, {14, "CH5N"}, {15, "CH6O"}, {16, "CIC"}, {17, "CL2"}, {18, "CLO2"}, {19, "C2CL4"}, {20, "C2HCL3"}, {21, "C2H2"}, {22, "C2H3CL"}, {23, "C2H"}, {24, "C2H4O"}, {25, "C2H6O"}, {26, "C3H3N"}, {27, "C3H6O"}, {28, "C3H8"}, {29, "C3H8O"}, {30, "C4H8O2"}, {31, "C4H8S"}, {32, "C4H10"}, {33, "C4H10O"}, {34, "C5H12"}, {35, "C6H6"}, {36, "C6H6S"}, {37, "C6H12"}, {38, "C6H14"}, {39, "C7H8"}, {40, "C7H16"}, {41, "C8H8"}, {42, "C8H10"}, {43, "C8H18"}, {44, "CS2"}, {45, "EX"}, {46, "ETO"}, {47, "F2"}, {48, "FX"}, {49, "GEH4"}, {50, "H2"}, {51, "H2O2"}, {52, "H2S"}, {53, "HCL"}, {54, "HCN"}, {55, "HBR"}, {56, "HE"}, {57, "HF"}, {58, "I2"}, {59, "NO"}, {60, "NO2"}, {61, "NOX"}, {62, "NF3"}, {63, "NH3"}, {64, "N2"}, {65, "N2O"}, {66, "N2H4"}, {67, "O2"}, {68, "O3"}, {69, "PH3"}, {70, "PID"}, {71, "P2O5"}, {72, "SO2"}, {73, "SO2F2"}, {74, "SIH4"}, {75, "SIF4"}, {76, "SF6"}, {77, "THT"}, {78, "TVOC"}, {79, "VOC"}, {80, "VOCS"}, {81, "SO3"}, {82, "NMHC"}, {83, "温度"}, {84, "湿度"}, {85, "风速"}, {86, "风向"}, {87, "降雨量"}, {88, "噪音"}};
     const std::map<int, std::string> sensor_status_map_ = {{0, "预热"}, {1, "正常"}, {2, "数据错误"}, {3, "传感器故障"}, {4, "预警"}, {5, "低报"}, {6, "高报"}, {7, "访问故障"}, {8, "超量程"}, {9, "需要标定"}, {10, "超时"}, {11, "STEL报警"}, {12, "TWA报警"}, {13, "保留"}, {14, "保留"}, {15, "通信故障"}};

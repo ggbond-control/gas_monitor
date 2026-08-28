@@ -12,6 +12,7 @@
   <depend>rclcpp</depend>
   <depend>diagnostic_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>rcl_interfaces</depend>
   <depend>yaml-cpp</depend>
 
   <test_depend>ament_lint_auto</test_depend>

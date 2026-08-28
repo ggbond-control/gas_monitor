@@ -22,6 +22,14 @@ ros2 launch gas_monitor gas_monitor.launch.py
 
 ros2 service call /monitor/gas/start std_srvs/srv/Trigger "{}"
 ros2 topic echo /monitor/gas/status | grep -E "(level|name|message|hardware_id)"
+ros2 service call /monitor/gas/set_parameters rcl_interfaces/srv/SetParameters \
+"{parameters: [
+    {name: 'use_config_alarm_thresholds', value: {type: 1, bool_value: true}},
+    {name: 'alarm_threshold_slave_ids', value: {type: 7, integer_array_value: [1, 2, 3, 4]}},
+    {name: 'low_alarm_overrides', value: {type: 8, double_array_value: [1.0, 2.0, 20.0, 15.0]}},
+    {name: 'high_alarm_overrides', value: {type: 8, double_array_value: [3.0, 5.0, 50.0, 30.0]}},
+    {name: 'gas_type_overrides', value: {type: 9, string_array_value: ['HF', 'SO2', 'CH4', 'H2S']}}
+]}"
 ros2 service call /monitor/gas/stop std_srvs/srv/Trigger "{}"
 ```
 
@@ -33,12 +41,13 @@ ros2 service call /monitor/gas/test_alarm std_srvs/srv/Trigger "{}"
 
 ## 接口
 
-| 名称                      | 类型                                   |
-| ------------------------- | -------------------------------------- |
-| `/monitor/gas/start`      | `std_srvs/srv/Trigger`                 |
-| `/monitor/gas/stop`       | `std_srvs/srv/Trigger`                 |
-| `/monitor/gas/status`     | `diagnostic_msgs/msg/DiagnosticStatus` |
-| `/monitor/gas/test_alarm` | `std_srvs/srv/Trigger`                 |
+| 名称                          | 类型                                   |
+| ----------------------------- | -------------------------------------- |
+| `/monitor/gas/start`          | `std_srvs/srv/Trigger`                 |
+| `/monitor/gas/stop`           | `std_srvs/srv/Trigger`                 |
+| `/monitor/gas/status`         | `diagnostic_msgs/msg/DiagnosticStatus` |
+| `/monitor/gas/test_alarm`     | `std_srvs/srv/Trigger`                 |
+| `/monitor/gas/set_parameters` | `rcl_interfaces/srv/SetParameters`     |
 
 `/monitor/gas/status`示例：
 
@@ -78,6 +87,18 @@ cat dialout sudo audio video render
 sudo bash -c 'stty -F /dev/ttyUSB0 9600 cs8 -cstopb -parenb raw -echo -ixon -ixoff; printf "\x01\x03\x00\x00\x00\x0A\xC5\xCD" > /dev/ttyUSB0; timeout 1 cat /dev/ttyUSB0 | xxd -g 1'
 00000000: 01 03 14 00 00 00 3b 01 f4 05 dc 0b b8 00 01 00  ......;.........
 00000010: 3b 01 02 06 00 03 5a 38 ad                       ;.....Z8.
+```
+
+```bash
+ls -l /dev/ttyS5
+crw-rw---- 1 root dialout 4, 69  8月 27 17:34 /dev/ttyS5
+
+groups
+cat dialout sudo audio video
+
+sudo bash -c 'stty -F /dev/ttyS5 9600 cs8 -cstopb -parenb raw -echo -ixon -ixoff; printf "\x01\x03\x00\x00\x00\x0A\xC5\xCD" > /dev/ttyS5; timeout 1 cat /dev/ttyS5 | xxd -g 1'
+00000000: 01 03 14 00 00 00 00 01 f4 05 dc 0b b8 00 01 00  ................
+00000010: 00 01 02 06 00 03 5a d1 53                       ......Z.S
 ```
 
 ```bash
