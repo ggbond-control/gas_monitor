@@ -1107,7 +1107,7 @@ private:
         uint8_t level = diagnostic_msgs::msg::DiagnosticStatus::OK;
         for (const auto &reading : readings)
         {
-            if (!reading.valid || reading.status_code < 0 || reading.status_code == 3 || reading.status_code == 5 || reading.status_code == 6 ||
+            if (!reading.valid || reading.status_code < 0 || reading.status_code == 3 || reading.status_code == 6 ||
                 reading.status_code == 7 || reading.status_code == 8 || reading.status_code == 10 || reading.status_code == 11 ||
                 reading.status_code == 12 || reading.status_code == 15)
             {

@@ -15,7 +15,7 @@ serial_gas_node:
     pump_relay_active_high: true
     pump_relay_socket_path: "/run/gas_monitor/pump_relay.sock"
     slave_ids: [1, 2, 3, 4]
-    use_config_alarm_thresholds: false
+    use_config_alarm_thresholds: true
     alarm_threshold_slave_ids: [1, 2, 3, 4]
     low_alarm_overrides: [1.0, 2.0, 20.0, 15.0]
     high_alarm_overrides: [3.0, 5.0, 50.0, 30.0]
