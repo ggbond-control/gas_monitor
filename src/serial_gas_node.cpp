@@ -804,9 +804,9 @@ private:
         msg.humidity = static_cast<double>(msg.registers[9]) / 10.0;
         msg.error.clear();
 
-        // RCLCPP_INFO(get_logger(), "[气体] 地址=%d 气体=%s(%d) 浓度=%.3f%s 低报=%.3f 高报=%.3f 状态=%s(0x%02X) AD=%d 温度=%.1f°C 湿度=%.1f%%RH",
-        //             slave_id, msg.gas.c_str(), msg.gas_type_code, msg.concentration, msg.unit.c_str(),
-        //             msg.low_alarm, msg.high_alarm, msg.status.c_str(), msg.status_code, msg.ad_value, msg.temp, msg.humidity);
+        RCLCPP_DEBUG(get_logger(), "[气体] 地址=%d 气体=%s(%d) 浓度=%.3f%s 低报=%.3f 高报=%.3f 状态=%s(0x%02X) AD=%d 温度=%.1f°C 湿度=%.1f%%RH",
+                     slave_id, msg.gas.c_str(), msg.gas_type_code, msg.concentration, msg.unit.c_str(),
+                     msg.low_alarm, msg.high_alarm, msg.status.c_str(), msg.status_code, msg.ad_value, msg.temp, msg.humidity);
         return true;
     }
 
@@ -1065,12 +1065,17 @@ private:
             }
         }
 
-        if ((status_changed && (reading.status_code != 1 || status_it != last_status_codes_.end())) || (audible_status(reading.status_code) && repeat_due))
+        if (reading.status_code != 1 && (status_changed || (audible_status(reading.status_code) && repeat_due)))
         {
             last_alarm_times_[reading.id] = now_tp;
-            RCLCPP_INFO(get_logger(), "%s[气体] 地址=%d 气体=%s 状态=%s(0x%02X) 级别=%s 音频=%s%s",
-                        summary.active ? (audible_status(reading.status_code) ? kLogRed : kLogYellow) : kLogGreen,
+            RCLCPP_WARN(get_logger(), "%s[气体报警] 地址=%d 气体=%s 状态=%s(0x%02X) 级别=%s 音频=%s%s",
+                        audible_status(reading.status_code) ? kLogRed : kLogYellow,
                         reading.id, reading.gas.c_str(), reading.status.c_str(), reading.status_code, level.c_str(), audible_status(reading.status_code) ? "是" : "否", kLogReset);
+        }
+        else if (status_changed && status_it != last_status_codes_.end())
+        {
+            RCLCPP_INFO(get_logger(), "%s[气体] 地址=%d 气体=%s 已恢复正常%s",
+                        kLogGreen, reading.id, reading.gas.c_str(), kLogReset);
         }
         last_status_codes_[reading.id] = reading.status_code;
     }
